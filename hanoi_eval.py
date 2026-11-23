@@ -123,6 +123,27 @@ def criar_execucao(conn, modelo, discos, repeticoes, modo):
     return execucao_id
 
 
+# Busca os erros!!!!
+def buscar_erros(conn, modelo, discos):
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT erro_no_movimento FROM resultados
+        WHERE modelo = %s AND discos = %s AND resolveu = 0
+          AND erro_no_movimento IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 10
+        """,
+        (modelo, discos),
+    )
+    erros = []
+    for (erro,) in cursor.fetchall():
+        if erro and erro not in erros:  # evita repetir o mesmo erro no prompt
+            erros.append(erro)
+    cursor.close()
+    return erros
+
+
 # Simula os movimentos em 3 pinos
 def validar(resposta, discos):
     # Le apenas as linhas no formato A->C; o resto e ignorado.
