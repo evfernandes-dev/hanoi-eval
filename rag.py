@@ -1,12 +1,26 @@
 # rag.py
-# Le os documentos markdown e divide em trechos por secao.
+# Le os documentos markdown, divide em trechos e gera embeddings.
 
 import hashlib
 import os
 import re
 
+import requests
+
+OLLAMA_EMBED_URL = "http://localhost:11434/api/embed"
+OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
+TIMEOUT_EMBEDDING = 120
 MAX_CARACTERES_TRECHO = 700
 VERSAO_DIVISAO = "v2"  # muda quando a forma de dividir os documentos mudar
+
+
+# Verifica se o modelo de embedding esta instalado, sem baixar nada.
+def modelo_instalado(modelo_embedding):
+    resposta = requests.get(OLLAMA_TAGS_URL, timeout=10)
+    resposta.raise_for_status()
+    modelos = [m.get("name", "") for m in resposta.json().get("models", [])]
+    nome_base = modelo_embedding.split(":")[0]
+    return any(nome.split(":")[0] == nome_base for nome in modelos)
 
 
 # Calcula um hash que tambem identifica a versao da divisao em trechos.
@@ -77,3 +91,17 @@ def _dividir_secao_longa(secao, max_caracteres):
     if atual:
         trechos.append(atual)
     return trechos
+
+
+# Gera o embedding de um texto usando o endpoint /api/embed do Ollama.
+def obter_embedding(texto, modelo_embedding):
+    resposta = requests.post(
+        OLLAMA_EMBED_URL,
+        json={"model": modelo_embedding, "input": texto},
+        timeout=TIMEOUT_EMBEDDING,
+    )
+    resposta.raise_for_status()
+    embeddings = resposta.json().get("embeddings") or []
+    if not embeddings:
+        raise RuntimeError("O Ollama nao retornou embeddings.")
+    return embeddings[0]
