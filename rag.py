@@ -1,7 +1,8 @@
 # rag.py
-# Le os documentos markdown, divide em trechos e gera embeddings.
+# Le os documentos markdown, divide em trechos, gera embeddings e salva no MySQL.
 
 import hashlib
+import json
 import os
 import re
 
@@ -105,3 +106,72 @@ def obter_embedding(texto, modelo_embedding):
     if not embeddings:
         raise RuntimeError("O Ollama nao retornou embeddings.")
     return embeddings[0]
+
+
+# Cria a tabela de trechos; nao altera as tabelas existentes.
+def criar_tabela(conn):
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rag_trechos (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            documento VARCHAR(255) NOT NULL,
+            hash_documento CHAR(64) NOT NULL,
+            modelo_embedding VARCHAR(100) NOT NULL,
+            ordem INT NOT NULL,
+            texto TEXT NOT NULL,
+            embedding LONGTEXT NOT NULL,
+            criado_em DATETIME NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    cursor.close()
+
+
+# Indexa os documentos no MySQL; pula o que ja esta indexado.
+def indexar(conn, pasta, modelo_embedding):
+    documentos = carregar_documentos(pasta)
+    for doc in documentos:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM rag_trechos
+            WHERE documento = %s AND hash_documento = %s AND modelo_embedding = %s
+            """,
+            (doc["documento"], doc["hash"], modelo_embedding),
+        )
+        existentes = cursor.fetchone()[0]
+        cursor.close()
+
+        if existentes:
+            print(f"RAG: {doc['documento']} ja indexado ({existentes} trechos).")
+            continue
+
+        print(f"RAG: indexando {doc['documento']} ({len(doc['trechos'])} trechos)...")
+        vetores = [
+            obter_embedding(trecho, modelo_embedding)
+            for trecho in doc["trechos"]
+        ]
+
+        cursor = conn.cursor()
+        for ordem, (trecho, vetor) in enumerate(zip(doc["trechos"], vetores), start=1):
+            cursor.execute(
+                """
+                INSERT INTO rag_trechos
+                    (documento, hash_documento, modelo_embedding, ordem,
+                     texto, embedding, criado_em)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                """,
+                (
+                    doc["documento"],
+                    doc["hash"],
+                    modelo_embedding,
+                    ordem,
+                    trecho,
+                    json.dumps(vetor),
+                ),
+            )
+        conn.commit()
+        cursor.close()
+        print(f"RAG: {doc['documento']} indexado.")
