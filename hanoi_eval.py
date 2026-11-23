@@ -1,8 +1,11 @@
 # hanoi_eval.py
 # Testa modelos locais do Ollama resolvendo a Torre de Hanói.
 
+import os
 import re
+import sys
 
+import mysql.connector
 import requests
 
 # ===== Configuracoes =====
@@ -13,6 +16,111 @@ USAR_RAG = False
 OLLAMA_URL = "http://localhost:11434/api/generate"
 TIMEOUT = 180
 FORMATO_MOVIMENTO = re.compile(r"^\s*([ABC])\s*->\s*([ABC])\s*$", re.IGNORECASE)
+
+
+# Le o .env sem biblioteca extra; nao sobrescreve variaveis ja definidas no sistema.
+def carregar_env():
+    caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(caminho):
+        return
+    with open(caminho, "r", encoding="utf-8") as arquivo:
+        for linha in arquivo:
+            linha = linha.strip()
+            if not linha or linha.startswith("#") or "=" not in linha:
+                continue
+            chave, valor = linha.split("=", 1)
+            os.environ.setdefault(chave.strip(), valor.strip().strip('"').strip("'"))
+
+
+# Abre a conexao com o MySQL usando apenas variaveis de ambiente.
+def conectar():
+    try:
+        return mysql.connector.connect(
+            host=os.environ.get("MYSQL_HOST", "localhost"),
+            user=os.environ.get("MYSQL_USER", "root"),
+            password=os.environ.get("MYSQL_PASSWORD", ""),
+            database=os.environ.get("MYSQL_DATABASE", "hanoi"),
+        )
+    except mysql.connector.Error as e:
+        print(f"ERRO: nao foi possivel conectar ao MySQL: {e}")
+        print("Confira as variaveis do .env e se o MySQL esta rodando (veja o README).")
+        sys.exit(1)
+
+
+# Verifica se uma coluna existe na tabela do banco atual.
+def coluna_existe(conn, tabela, coluna):
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT COUNT(*) FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s AND COLUMN_NAME = %s
+        """,
+        (tabela, coluna),
+    )
+    existe = cursor.fetchone()[0] > 0
+    cursor.close()
+    return existe
+
+
+# Cria as tabelas necessarias e migra bancos antigos sem apagar dados.
+def criar_tabela(conn):
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS execucoes (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            data DATETIME NOT NULL,
+            modelo VARCHAR(100) NOT NULL,
+            discos INT NOT NULL,
+            repeticoes INT NOT NULL,
+            modo VARCHAR(30) NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS resultados (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            execucao_id INT NULL,
+            data DATETIME NOT NULL,
+            modelo VARCHAR(100) NOT NULL,
+            discos INT NOT NULL,
+            tentativa INT NOT NULL,
+            resolveu BOOLEAN NOT NULL,
+            movimentos_feitos INT NOT NULL,
+            movimentos_minimos INT NOT NULL,
+            erro_no_movimento VARCHAR(255) NULL,
+            tempo_segundos FLOAT NOT NULL,
+            usou_memoria BOOLEAN NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    cursor.close()
+
+    # Migracao aditiva: apenas adiciona a coluna; registros antigos ficam NULL.
+    if not coluna_existe(conn, "resultados", "execucao_id"):
+        cursor = conn.cursor()
+        cursor.execute("ALTER TABLE resultados ADD COLUMN execucao_id INT NULL")
+        conn.commit()
+        cursor.close()
+
+
+# Cria uma execucao e devolve o id gerado para associar aos resultados.
+def criar_execucao(conn, modelo, discos, repeticoes, modo):
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO execucoes (data, modelo, discos, repeticoes, modo)
+        VALUES (NOW(), %s, %s, %s, %s)
+        """,
+        (modelo, discos, repeticoes, modo),
+    )
+    execucao_id = cursor.lastrowid
+    conn.commit()
+    cursor.close()
+    return execucao_id
 
 
 # Simula os movimentos em 3 pinos
