@@ -38,6 +38,29 @@ You switch between them with the flags at the top of `hanoi_eval.py`
 (`USAR_MEMORIA` and `USAR_RAG`). RAG indexing happens automatically on the
 first run with `USAR_RAG = True`.
 
+## Results so far (honest summary)
+
+- 14 runs and 45 attempts, mainly with `qwen2.5:3b`.
+- The baseline fails at move 6 every time.
+- The only success was one run in memory mode: a single sample, not conclusive.
+- RAG changed the errors: the model makes only legal moves (7 moves) but still
+  ends with an incomplete tower.
+- No strategy can be said to "work" yet.
+
+## Known limitations
+
+- Small models only (3B parameters).
+- One task only (Tower of Hanoi with 3 disks).
+- Raw model answers are not saved yet.
+- Memory mode was tested only once.
+- Old RAG embeddings may remain in the database after a document changes.
+
+## Next steps
+
+- Save the raw model answers.
+- Run A/B tests with 10+ repetitions per mode.
+- Try more models.
+
 ## Privacy note
 
 Models, database data and local files are **not** in this repo. Everything
