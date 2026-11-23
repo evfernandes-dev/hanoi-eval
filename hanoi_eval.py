@@ -1,17 +1,28 @@
 # hanoi_eval.py
-# Testa modelos locais do Ollama resolvendo a Torre de Hanói.
+# Testa modelos locais do Ollama resolvendo a Torre de Hanói,
+# grava cada tentativa no MySQL e usa uma memoria de erros nos prompts.
 
 import os
 import re
 import sys
+import time
 
 import mysql.connector
 import requests
 
+import rag
+
 # ===== Configuracoes =====
+MODELOS = ["qwen2.5:3b"]
 DISCOS = 3
+REPETICOES = 5
 USAR_MEMORIA = False
-USAR_RAG = False
+USAR_RAG = True
+MODELO_EMBEDDING = "nomic-embed-text"
+TOP_K = 3
+PASTA_CONHECIMENTO = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "knowledge"
+)
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 TIMEOUT = 180
@@ -218,3 +229,165 @@ def perguntar_ollama(modelo, prompt):
     )
     resposta.raise_for_status()
     return resposta.json().get("response", "")
+
+
+def main():
+    carregar_env()
+    conn = conectar()
+    criar_tabela(conn)
+    minimos = 2 ** DISCOS - 1
+    modo = "memoria" if USAR_MEMORIA else "sem_memoria"
+    if USAR_RAG:
+        modo += "_rag"
+
+    contexto_rag = ""
+    trechos = []
+    if USAR_RAG:
+        print(f"RAG: ativado | modelo de embedding: {MODELO_EMBEDDING}")
+        try:
+            if not rag.modelo_instalado(MODELO_EMBEDDING):
+                print(
+                    f"ERRO: modelo de embedding '{MODELO_EMBEDDING}' nao instalado."
+                )
+                print(f"Rode: ollama pull {MODELO_EMBEDDING}")
+                conn.close()
+                sys.exit(1)
+
+            rag.criar_tabela(conn)
+            rag.indexar(conn, PASTA_CONHECIMENTO, MODELO_EMBEDDING)
+            pergunta = rag.pergunta_para_discos(DISCOS)
+            trechos = rag.buscar(
+                conn, pergunta, MODELO_EMBEDDING, PASTA_CONHECIMENTO, TOP_K
+            )
+            contexto_rag = rag.montar_contexto(trechos)
+            documentos = sorted({t["documento"] for t in trechos})
+            print(
+                f"RAG: {len(trechos)} trechos recuperados | documentos: "
+                f"{', '.join(documentos) if documentos else 'nenhum'}"
+            )
+            for numero, trecho in enumerate(trechos, start=1):
+                print(
+                    f"  [{numero}] {trecho['documento']} | "
+                    f"similaridade={trecho['score']:.4f}"
+                )
+                print("      " + trecho["texto"].replace("\n", "\n      "))
+            if not trechos:
+                print("RAG: nenhum trecho encontrado; seguindo sem contexto.")
+        except requests.exceptions.ConnectionError:
+            print("ERRO: o Ollama nao esta rodando em http://localhost:11434.")
+            conn.close()
+            sys.exit(1)
+        except requests.exceptions.RequestException as e:
+            print(f"ERRO ao gerar embeddings no Ollama: {e}")
+            conn.close()
+            sys.exit(1)
+        except mysql.connector.Error as e:
+            print(f"ERRO no MySQL ao preparar o RAG: {e}")
+            conn.close()
+            sys.exit(1)
+        except (RuntimeError, ValueError) as e:
+            print(f"ERRO no RAG: {e}")
+            conn.close()
+            sys.exit(1)
+    else:
+        print("RAG: desativado")
+
+    print(
+        f"Modelos: {len(MODELOS)} | discos: {DISCOS} | repeticoes: {REPETICOES} "
+        f"| memoria: {USAR_MEMORIA} | rag: {USAR_RAG} "
+        f"| minimo de movimentos: {minimos}\n"
+    )
+
+    for modelo in MODELOS:
+        execucao_id = criar_execucao(conn, modelo, DISCOS, REPETICOES, modo)
+        print(f"=== {modelo} | execucao #{execucao_id} | modo: {modo} ===")
+        tempos = []
+        movimentos_ok = []
+        acertos = 0
+        gravadas = 0
+
+        # Repete o teste para cada modelo.
+        for tentativa in range(1, REPETICOES + 1):
+            erros = buscar_erros(conn, modelo, DISCOS) if USAR_MEMORIA else []
+            prompt = montar_prompt(erros, contexto_rag)
+
+            inicio = time.time()
+            try:
+                texto = perguntar_ollama(modelo, prompt)
+            except requests.exceptions.ConnectionError:
+                print("ERRO: o Ollama nao esta rodando em http://localhost:11434.")
+                print("Inicie com 'ollama serve' e rode o script de novo.")
+                conn.close()
+                sys.exit(1)
+            except requests.exceptions.ReadTimeout:
+                print(f"tentativa {tentativa}/{REPETICOES}: tempo esgotado, pulando...")
+                continue
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    print(f"ERRO: modelo '{modelo}' nao encontrado. Rode: ollama pull {modelo}")
+                    break
+                print(f"tentativa {tentativa}/{REPETICOES}: erro HTTP ({e}), pulando...")
+                continue
+            except requests.exceptions.RequestException as e:
+                print(f"tentativa {tentativa}/{REPETICOES}: falha no Ollama ({e}), pulando...")
+                continue
+            tempo = time.time() - inicio
+
+            resolveu, feitos, erro = validar(texto, DISCOS)
+
+            # Grava a tentativa com parametros (%s), nunca concatenando SQL.
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO resultados
+                    (data, execucao_id, modelo, discos, tentativa, resolveu,
+                     movimentos_feitos, movimentos_minimos, erro_no_movimento,
+                     tempo_segundos, usou_memoria)
+                VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    execucao_id,
+                    modelo,
+                    DISCOS,
+                    tentativa,
+                    resolveu,
+                    feitos,
+                    minimos,
+                    erro,
+                    round(tempo, 2),
+                    USAR_MEMORIA,
+                ),
+            )
+            conn.commit()
+            cursor.close()
+
+            gravadas += 1
+            tempos.append(tempo)
+            if resolveu:
+                acertos += 1
+                movimentos_ok.append(feitos)
+
+            status = "OK" if resolveu else f"erro: {erro}"
+            print(f"tentativa {tentativa}/{REPETICOES}: {status} | "
+                  f"{feitos} movimentos | {tempo:.2f}s")
+
+        # Resumo simples do modelo.
+        print()
+        if gravadas == 0:
+            print(f"Resumo {modelo}: nenhuma tentativa concluida.\n")
+            continue
+
+        taxa = acertos / gravadas * 100
+        print(f"Acertos: {acertos} de {gravadas} = {taxa:.0f}%")
+        if movimentos_ok:
+            media = sum(movimentos_ok) / len(movimentos_ok)
+            print(f"Media de movimentos (acertos): {media:.1f} | minimo: {minimos}")
+        else:
+            print("Media de movimentos (acertos): sem acertos")
+        print(f"Tempo medio: {sum(tempos) / len(tempos):.2f}s\n")
+
+    conn.close()
+
+
+if __name__ == "__main__":
+    main()
