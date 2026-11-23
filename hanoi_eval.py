@@ -1,6 +1,8 @@
 # hanoi_eval.py
 # Testa modelos locais do Ollama resolvendo a Torre de Hanói.
 
+import re
+
 import requests
 
 # ===== Configuracoes =====
@@ -10,6 +12,39 @@ USAR_RAG = False
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 TIMEOUT = 180
+FORMATO_MOVIMENTO = re.compile(r"^\s*([ABC])\s*->\s*([ABC])\s*$", re.IGNORECASE)
+
+
+# Simula os movimentos em 3 pinos
+def validar(resposta, discos):
+    # Le apenas as linhas no formato A->C; o resto e ignorado.
+    movimentos = []
+    for linha in resposta.splitlines():
+        achado = FORMATO_MOVIMENTO.match(linha)
+        if achado:
+            movimentos.append((achado.group(1).upper(), achado.group(2).upper()))
+
+    pinos = {"A": list(range(discos, 0, -1)), "B": [], "C": []}  # topo = ultimo item
+    erro = None
+
+    for numero, (origem, destino) in enumerate(movimentos, start=1):
+        if origem == destino:  # movimento sem efeito, nao conta como erro
+            continue
+        if not pinos[origem]:
+            erro = f"{numero} (pino {origem} vazio)"
+            break
+        disco = pinos[origem][-1]
+        if pinos[destino] and pinos[destino][-1] < disco:
+            erro = f"{numero} (disco {disco} sobre disco {pinos[destino][-1]})"
+            break
+        pinos[origem].pop()
+        pinos[destino].append(disco)
+
+    resolveu = erro is None and pinos["C"] == list(range(discos, 0, -1))
+    if not resolveu and erro is None:
+        erro = f"{len(movimentos) + 1} (torre incompleta)"
+
+    return resolveu, len(movimentos), erro
 
 
 # Monta o prompt, incluindo RAG e/ou memoria quando ativados.
