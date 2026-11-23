@@ -1,0 +1,117 @@
+# hanoi-eval
+
+A small lab to test how well local LLMs solve the Tower of Hanoi.
+
+## What is this?
+
+This is a **lab**. It is an exploratory experiment to learn how to evaluate
+small local models in a reproducible way. It is **not** a production app.
+
+## Research question
+
+Do prompt strategies (baseline, error memory, RAG) help a small local model
+solve a recursive planning task?
+
+## How it works
+
+The project has four layers:
+
+1. **Evaluation** - `hanoi_eval.py` builds a prompt, sends it to a local
+   Ollama model with temperature 0, and repeats the test N times.
+2. **Deterministic validation** - `validar()` simulates the moves on three
+   pegs and only accepts a full, ordered tower on peg C. It does not trust
+   the model's answer.
+3. **Observability in MySQL** - every run is stored in `execucoes` and every
+   attempt in `resultados` (accuracy, moves, exact error, latency, mode).
+4. **Custom RAG** - `rag.py` splits the markdown files into chunks, creates
+   embeddings with `nomic-embed-text`, stores them in MySQL and retrieves the
+   top-k chunks by cosine similarity.
+
+## The 3 prompt strategies
+
+- **Baseline** - just the rules and the output format.
+- **Error memory** - adds the last errors stored for the same model and disk
+  count, asking the model not to repeat them.
+- **RAG** - adds knowledge retrieved from the documents in `knowledge/`.
+
+You switch between them with the flags at the top of `hanoi_eval.py`
+(`USAR_MEMORIA` and `USAR_RAG`). RAG indexing happens automatically on the
+first run with `USAR_RAG = True`.
+
+## Privacy note
+
+Models, database data and local files are **not** in this repo. Everything
+runs locally on the machine of whoever executes it.
+
+## How to run
+
+Prerequisites:
+
+- Python 3.8+
+- Ollama running locally, with the models used by the script
+  (`qwen2.5:3b` by default, and `nomic-embed-text` for RAG)
+- MySQL 8
+
+Install:
+
+```bash
+python -m venv .venv
+```
+
+Windows:
+
+```bash
+.venv\Scripts\activate
+```
+
+Linux/macOS:
+
+```bash
+source .venv/bin/activate
+```
+
+Then:
+
+```bash
+pip install -r requirements.txt
+```
+
+Create the database (example with Docker; use your own password):
+
+```bash
+docker run -d --name mysql-hanoi -e MYSQL_ROOT_PASSWORD=change-me -e MYSQL_DATABASE=hanoi -p 3306:3306 mysql:8
+```
+
+Configure the environment:
+
+```bash
+copy .env.example .env
+```
+
+On Linux/macOS use `cp .env.example .env`. Then edit `.env` with your MySQL
+settings.
+
+Run the evaluation:
+
+```bash
+python hanoi_eval.py
+```
+
+The tables are created automatically. To test RAG, set `USAR_RAG = True` at
+the top of `hanoi_eval.py`; the first run indexes the documents in
+`knowledge/`.
+
+## Project structure
+
+```
+hanoi_eval.py        # evaluation loop, prompt modes, validation, MySQL logging
+rag.py               # custom RAG: chunking, embeddings, cosine similarity search
+knowledge/           # markdown documents used by the RAG
+requirements.txt     # Python dependencies
+.env.example         # example environment variables
+README.md            # this file
+```
+
+## Status
+
+Exploratory study. Work in progress.
