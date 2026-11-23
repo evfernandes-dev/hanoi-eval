@@ -1,0 +1,68 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Databases and dumps
+*.sql
+*.dump
+*.db
+*.sqlite
+*.sqlite3
+mysql-data/
+docker-volumes/
+
+# Models and weights
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.onnx
+*.pth
+models/
+
+# Embeddings and vector indexes
+*.npy
+*.pkl
+*.pickle
+*.faiss
+*.index
+embeddings/
+.cache/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Logs and outputs
+*.log
+logs/
+output/
+outputs/
+results/
+responses/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE and OS files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backups and archives
+*.bak
+*.backup
+*.zip
+*.7z
+*.tar
+*.tar.gz
