@@ -1,8 +1,9 @@
 # rag.py
-# Le os documentos markdown, divide em trechos, gera embeddings e salva no MySQL.
+# Funcoes simples de RAG: documentos, embeddings, MySQL e busca por cosseno.
 
 import hashlib
 import json
+import math
 import os
 import re
 
@@ -175,3 +176,71 @@ def indexar(conn, pasta, modelo_embedding):
         conn.commit()
         cursor.close()
         print(f"RAG: {doc['documento']} indexado.")
+
+
+# Calcula a similaridade de cosseno entre dois vetores.
+def similaridade_cosseno(a, b):
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    produto = math.fsum(x * y for x, y in zip(a, b))
+    norma_a = math.sqrt(math.fsum(x * x for x in a))
+    norma_b = math.sqrt(math.fsum(y * y for y in b))
+    if norma_a == 0 or norma_b == 0:
+        return 0.0
+    return produto / (norma_a * norma_b)
+
+
+# Ordena os trechos pela similaridade e devolve os mais relevantes.
+def ranquear(consulta_vetor, trechos, limite):
+    pontuados = []
+    for trecho in trechos:
+        vetor = json.loads(trecho["embedding"])
+        score = similaridade_cosseno(consulta_vetor, vetor)
+        pontuados.append({**trecho, "score": score})
+    pontuados.sort(key=lambda item: item["score"], reverse=True)
+    return pontuados[:limite]
+
+
+# Gera o embedding da pergunta e busca os trechos mais parecidos.
+def buscar(conn, pergunta, modelo_embedding, pasta, limite=3):
+    documentos = carregar_documentos(pasta)
+    hashes_atuais = {(d["documento"], d["hash"]) for d in documentos}
+    consulta_vetor = obter_embedding(pergunta, modelo_embedding)
+
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT documento, hash_documento, texto, embedding
+        FROM rag_trechos
+        WHERE modelo_embedding = %s
+        """,
+        (modelo_embedding,),
+    )
+    linhas = []
+    for documento, hash_documento, texto, embedding in cursor.fetchall():
+        if (documento, hash_documento) in hashes_atuais:
+            linhas.append(
+                {"documento": documento, "texto": texto, "embedding": embedding}
+            )
+    cursor.close()
+
+    if not linhas:
+        return []
+    return ranquear(consulta_vetor, linhas, limite)
+
+
+# Monta o texto que sera colocado no prompt do Qwen.
+def montar_contexto(trechos):
+    partes = []
+    for numero, trecho in enumerate(trechos, start=1):
+        partes.append(f"[{numero}] {trecho['texto']}")
+    return "\n\n".join(partes)
+
+
+# Pergunta fixa usada para recuperar conhecimentos sobre o problema.
+def pergunta_para_discos(discos):
+    return (
+        f"Como planejar a solucao da Torre de Hanói com {discos} discos: "
+        "qual haste usar como auxiliar, como liberar a haste de destino para o "
+        "disco maior, como mover os discos menores e como verificar cada movimento?"
+    )
