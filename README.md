@@ -44,19 +44,11 @@ RAG indexing runs automatically on the first run with `USAR_RAG = True`.
 - RAG makes the moves legal (7 moves), but the tower still ends incomplete.
 - No strategy can be said to "work" yet.
 
-## Known limitations
+## Limitations and next steps
 
-- Small models only (3B parameters).
-- One task only (Tower of Hanoi with 3 disks).
-- Raw model answers are not saved yet.
-- Memory mode was tested only once.
-- Old RAG embeddings may remain in the database after a document changes.
-
-## Next steps
-
-- Save the raw model answers.
-- Run A/B tests with 10+ repetitions per mode.
-- Try more models.
+- Small models only (3B), one task, raw answers not saved yet.
+- Memory mode was tested only once; old RAG embeddings may stay in the DB.
+- Next: save raw answers, run A/B tests with 10+ repetitions, try more models.
 
 ## Privacy note
 
