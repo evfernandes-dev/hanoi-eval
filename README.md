@@ -57,32 +57,18 @@ runs locally on the machine of whoever executes it.
 
 ## How to run
 
-Prerequisites:
+Prerequisites: Python 3.8+, Ollama with `qwen2.5:3b` (and `nomic-embed-text`
+for RAG) and MySQL 8.
 
-- Python 3.8+
-- Ollama running locally, with the models used by the script
-  (`qwen2.5:3b` by default, and `nomic-embed-text` for RAG)
-- MySQL 8
-
-Install:
+Install and activate the venv:
 
 ```bash
 python -m venv .venv
+.venv\Scripts\activate        # Windows
+source .venv/bin/activate     # Linux/macOS
 ```
 
-Windows:
-
-```bash
-.venv\Scripts\activate
-```
-
-Linux/macOS:
-
-```bash
-source .venv/bin/activate
-```
-
-Then:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -94,24 +80,15 @@ Create the database (example with Docker; use your own password):
 docker run -d --name mysql-hanoi -e MYSQL_ROOT_PASSWORD=change-me -e MYSQL_DATABASE=hanoi -p 3306:3306 mysql:8
 ```
 
-Configure the environment:
+Configure and run:
 
 ```bash
-copy .env.example .env
-```
-
-On Linux/macOS use `cp .env.example .env`. Then edit `.env` with your MySQL
-settings.
-
-Run the evaluation:
-
-```bash
+copy .env.example .env        # Windows; on Linux/macOS: cp .env.example .env
 python hanoi_eval.py
 ```
 
-The tables are created automatically. To test RAG, set `USAR_RAG = True` at
-the top of `hanoi_eval.py`; the first run indexes the documents in
-`knowledge/`.
+Tables are created automatically. Set `USAR_RAG = True` to index `knowledge/`
+and use RAG.
 
 ## Project structure
 
