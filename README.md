@@ -28,14 +28,13 @@ The project has four layers:
 
 ## The 3 prompt strategies
 
-- **Baseline** - just the rules and the output format.
-- **Error memory** - adds the last errors stored for the same model and disk
+- **Baseline** - rules + output format only.
+- **Error memory** - adds the last stored errors for the same model and disk
   count, asking the model not to repeat them.
-- **RAG** - adds knowledge retrieved from the documents in `knowledge/`.
+- **RAG** - adds knowledge retrieved from `knowledge/`.
 
-You switch between them with the flags at the top of `hanoi_eval.py`
-(`USAR_MEMORIA` and `USAR_RAG`). RAG indexing happens automatically on the
-first run with `USAR_RAG = True`.
+Toggle them with `USAR_MEMORIA` and `USAR_RAG` at the top of `hanoi_eval.py`.
+RAG indexing runs automatically on the first run with `USAR_RAG = True`.
 
 ## Results so far (honest summary)
 
