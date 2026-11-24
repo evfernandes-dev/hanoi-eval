@@ -1,11 +1,11 @@
 # hanoi-eval
 
-A small lab to test how well local LLMs solve the Tower of Hanoi.
+A small lab to test local LLMs on the Tower of Hanoi.
 
 ## What is this?
 
-This is a **lab**. It is an exploratory experiment to learn how to evaluate
-small local models in a reproducible way. It is **not** a production app.
+A **lab**, not a production app: an exploratory experiment to learn how to
+evaluate small local models in a reproducible way.
 
 ## Research question
 
