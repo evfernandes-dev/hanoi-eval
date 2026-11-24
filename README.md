@@ -16,16 +16,15 @@ solve a recursive planning task?
 
 The project has four layers:
 
-1. **Evaluation** - `hanoi_eval.py` builds a prompt, sends it to a local
-   Ollama model with temperature 0, and repeats the test N times.
-2. **Deterministic validation** - `validar()` simulates the moves on three
-   pegs and only accepts a full, ordered tower on peg C. It does not trust
-   the model's answer.
-3. **Observability in MySQL** - every run is stored in `execucoes` and every
-   attempt in `resultados` (accuracy, moves, exact error, latency, mode).
-4. **Custom RAG** - `rag.py` splits the markdown files into chunks, creates
-   embeddings with `nomic-embed-text`, stores them in MySQL and retrieves the
-   top-k chunks by cosine similarity.
+1. **Evaluation** - `hanoi_eval.py` sends prompts to a local Ollama model
+   (temperature 0) and repeats the test N times.
+2. **Deterministic validation** - `validar()` simulates the moves on 3 pegs
+   and only accepts a full, ordered tower on peg C. It never trusts the model.
+3. **Observability** - every run and attempt is logged in MySQL (`execucoes`,
+   `resultados`): accuracy, moves, error, latency and mode.
+4. **Custom RAG** - `rag.py` chunks the markdown files, embeds them with
+   `nomic-embed-text`, stores them in MySQL and retrieves the top-k chunks by
+   cosine similarity.
 
 ## The 3 prompt strategies
 
