@@ -94,13 +94,13 @@ and use RAG.
 
 ```
 hanoi_eval.py        # evaluation loop, prompt modes, validation, MySQL logging
-rag.py               # custom RAG: chunking, embeddings, cosine similarity search
-knowledge/           # markdown documents used by the RAG
-requirements.txt     # Python dependencies
-.env.example         # example environment variables
+rag.py               # custom RAG: chunking, embeddings, cosine search
+knowledge/           # markdown docs used by the RAG
+requirements.txt     # dependencies
+.env.example         # example env vars
 README.md            # this file
 ```
 
 ## Status
 
-Exploratory study. Work in progress.
+Exploratory study, work in progress.
