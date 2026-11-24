@@ -38,11 +38,10 @@ RAG indexing runs automatically on the first run with `USAR_RAG = True`.
 
 ## Results so far (honest summary)
 
-- 14 runs and 45 attempts, mainly with `qwen2.5:3b`.
-- The baseline fails at move 6 every time.
-- The only success was one run in memory mode: a single sample, not conclusive.
-- RAG changed the errors: the model makes only legal moves (7 moves) but still
-  ends with an incomplete tower.
+- 14 runs and 45 attempts, mostly with `qwen2.5:3b`.
+- Baseline fails at move 6 every time.
+- One memory-mode run solved it once: single sample, not conclusive.
+- RAG makes the moves legal (7 moves), but the tower still ends incomplete.
 - No strategy can be said to "work" yet.
 
 ## Known limitations
