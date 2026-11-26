@@ -2,6 +2,7 @@
 # Testa modelos locais do Ollama resolvendo a Torre de Hanói,
 # grava cada tentativa no MySQL e usa uma memoria de erros nos prompts.
 
+import json
 import os
 import re
 import sys
@@ -15,9 +16,10 @@ import rag
 # ===== Configuracoes =====
 MODELOS = ["qwen2.5:3b"]
 DISCOS = 3
-REPETICOES = 5
+REPETICOES = 10
 USAR_MEMORIA = False
 USAR_RAG = True
+VERSAO_PROMPT = "v2"
 MODELO_EMBEDDING = "nomic-embed-text"
 TOP_K = 3
 PASTA_CONHECIMENTO = os.path.join(
@@ -25,8 +27,18 @@ PASTA_CONHECIMENTO = os.path.join(
 )
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 TIMEOUT = 180
-FORMATO_MOVIMENTO = re.compile(r"^\s*([ABC])\s*->\s*([ABC])\s*$", re.IGNORECASE)
+MOVIMENTO = re.compile(r"([ABC])\s*(?:-+>|=>|→|⇒)\s*([ABC])", re.IGNORECASE)
+MARCADOR_LINHA = re.compile(r"^\s*(?:(?:[-*•–—]|\d+[.)])\s*)+")
+PREFIXO_PASSO = re.compile(
+    r"^(?:passo|movimento|jogada|move|step)\s*\d*\s*[:.\-–—)]\s*",
+    re.IGNORECASE,
+)
+RESIDUO_MOVIMENTOS = re.compile(
+    r"^[\s,;.()\[\]|•–—\-]*(?:(?:e|and)[\s,;.()\[\]|•–—\-]*)*$",
+    re.IGNORECASE,
+)
 
 
 # Le o .env sem biblioteca extra; nao sobrescreve variaveis ja definidas no sistema.
@@ -85,7 +97,10 @@ def criar_tabela(conn):
             modelo VARCHAR(100) NOT NULL,
             discos INT NOT NULL,
             repeticoes INT NOT NULL,
-            modo VARCHAR(30) NOT NULL
+            modo VARCHAR(30) NOT NULL,
+            modelo_digest VARCHAR(64) NULL,
+            prompt_versao VARCHAR(10) NOT NULL DEFAULT 'v1',
+            rag_versao VARCHAR(10) NULL
         )
         """
     )
@@ -103,30 +118,65 @@ def criar_tabela(conn):
             movimentos_minimos INT NOT NULL,
             erro_no_movimento VARCHAR(255) NULL,
             tempo_segundos FLOAT NOT NULL,
-            usou_memoria BOOLEAN NOT NULL
+            usou_memoria BOOLEAN NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'ok',
+            prompt MEDIUMTEXT NULL,
+            resposta_bruta MEDIUMTEXT NULL,
+            estado_final TEXT NULL,
+            rodada INT NOT NULL DEFAULT 1,
+            temperatura FLOAT NULL,
+            seed INT NULL,
+            usou_rag BOOLEAN NOT NULL DEFAULT 0,
+            chunks TEXT NULL,
+            chunks_rag TEXT NULL
         )
         """
     )
     conn.commit()
     cursor.close()
 
-    # Migracao aditiva: apenas adiciona a coluna; registros antigos ficam NULL.
-    if not coluna_existe(conn, "resultados", "execucao_id"):
-        cursor = conn.cursor()
-        cursor.execute("ALTER TABLE resultados ADD COLUMN execucao_id INT NULL")
-        conn.commit()
-        cursor.close()
+    # Migracao aditiva: apenas adiciona a coluna; registros antigos ficam com o default.
+    migracoes = {
+        ("resultados", "execucao_id"): "INT NULL",
+        ("resultados", "status"): "VARCHAR(20) NOT NULL DEFAULT 'ok'",
+        ("resultados", "prompt"): "MEDIUMTEXT NULL",
+        ("resultados", "resposta_bruta"): "MEDIUMTEXT NULL",
+        ("resultados", "estado_final"): "TEXT NULL",
+        ("resultados", "rodada"): "INT NOT NULL DEFAULT 1",
+        ("resultados", "temperatura"): "FLOAT NULL",
+        ("resultados", "seed"): "INT NULL",
+        ("resultados", "usou_rag"): "BOOLEAN NOT NULL DEFAULT 0",
+        ("resultados", "chunks"): "TEXT NULL",
+        ("resultados", "chunks_rag"): "TEXT NULL",
+        ("execucoes", "modelo_digest"): "VARCHAR(64) NULL",
+        ("execucoes", "prompt_versao"): "VARCHAR(10) NOT NULL DEFAULT 'v1'",
+        ("execucoes", "rag_versao"): "VARCHAR(10) NULL",
+    }
+    for (tabela, coluna), definicao in migracoes.items():
+        if not coluna_existe(conn, tabela, coluna):
+            cursor = conn.cursor()
+            cursor.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {definicao}")
+            conn.commit()
+            cursor.close()
 
 
 # Cria uma execucao e devolve o id gerado para associar aos resultados.
-def criar_execucao(conn, modelo, discos, repeticoes, modo):
+def criar_execucao(
+    conn, modelo, discos, repeticoes, modo, modelo_digest, prompt_versao,
+    rag_versao=None,
+):
     cursor = conn.cursor()
     cursor.execute(
         """
-        INSERT INTO execucoes (data, modelo, discos, repeticoes, modo)
-        VALUES (NOW(), %s, %s, %s, %s)
+        INSERT INTO execucoes
+            (data, modelo, discos, repeticoes, modo, modelo_digest,
+             prompt_versao, rag_versao)
+        VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s)
         """,
-        (modelo, discos, repeticoes, modo),
+        (
+            modelo, discos, repeticoes, modo, modelo_digest, prompt_versao,
+            rag_versao,
+        ),
     )
     execucao_id = cursor.lastrowid
     conn.commit()
@@ -134,7 +184,66 @@ def criar_execucao(conn, modelo, discos, repeticoes, modo):
     return execucao_id
 
 
-# Busca os erros!!!!
+# Grava uma tentativa, inclusive quando o Ollama falha ou a resposta e invalida.
+def registrar_resultado(
+    conn,
+    execucao_id,
+    modelo,
+    tentativa,
+    minimos,
+    resolveu,
+    feitos,
+    erro,
+    tempo,
+    status,
+    prompt,
+    resposta_bruta,
+    estado_final,
+    chunks,
+    rodada=1,
+    temperatura=None,
+    seed=None,
+    chunks_rag=None,
+):
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO resultados
+            (data, execucao_id, modelo, discos, tentativa, resolveu,
+             movimentos_feitos, movimentos_minimos, erro_no_movimento,
+             tempo_segundos, usou_memoria, status, prompt, resposta_bruta,
+             estado_final, rodada, temperatura, seed, usou_rag, chunks,
+             chunks_rag)
+        VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            execucao_id,
+            modelo,
+            DISCOS,
+            tentativa,
+            resolveu,
+            feitos,
+            minimos,
+            erro,
+            round(tempo, 2),
+            USAR_MEMORIA,
+            status,
+            prompt,
+            resposta_bruta,
+            estado_final,
+            rodada,
+            temperatura,
+            seed,
+            USAR_RAG,
+            chunks,
+            chunks_rag,
+        ),
+    )
+    conn.commit()
+    cursor.close()
+
+
+# Busca os ultimos erros
 def buscar_erros(conn, modelo, discos):
     cursor = conn.cursor()
     cursor.execute(
@@ -155,39 +264,67 @@ def buscar_erros(conn, modelo, discos):
     return erros
 
 
+# Extrai movimentos de linhas com numeracao, bullets ou prefixo "Passo N:".
+def _extrair_movimentos(resposta):
+    movimentos = []
+    for linha in (resposta or "").splitlines():
+        linha = MARCADOR_LINHA.sub("", linha).strip()
+        linha = PREFIXO_PASSO.sub("", linha).strip()
+        if not linha:
+            continue
+        achados = MOVIMENTO.findall(linha)
+        if not achados:
+            continue
+        resto = MOVIMENTO.sub("", linha)
+        if not RESIDUO_MOVIMENTOS.match(resto):
+            continue
+        for origem, destino in achados:
+            movimentos.append((origem.upper(), destino.upper()))
+    return movimentos
+
+
 # Simula os movimentos em 3 pinos
 def validar(resposta, discos):
-    # Le apenas as linhas no formato A->C; o resto e ignorado.
-    movimentos = []
-    for linha in resposta.splitlines():
-        achado = FORMATO_MOVIMENTO.match(linha)
-        if achado:
-            movimentos.append((achado.group(1).upper(), achado.group(2).upper()))
+    movimentos = _extrair_movimentos(resposta)
+    if not movimentos:
+        return (
+            False,
+            0,
+            "formato inválido (nenhum movimento A->C encontrado)",
+            "formato_invalido",
+            None,
+        )
 
+    # Movimentos para o mesmo pino nao alteram o estado e nao contam.
+    efetivos = [(origem, destino) for origem, destino in movimentos
+                if origem != destino]
     pinos = {"A": list(range(discos, 0, -1)), "B": [], "C": []}  # topo = ultimo item
     erro = None
+    status = "ok"
 
-    for numero, (origem, destino) in enumerate(movimentos, start=1):
-        if origem == destino:  # movimento sem efeito, nao conta como erro
-            continue
+    for numero, (origem, destino) in enumerate(efetivos, start=1):
         if not pinos[origem]:
             erro = f"{numero} (pino {origem} vazio)"
+            status = "lance_ilegal"
             break
         disco = pinos[origem][-1]
         if pinos[destino] and pinos[destino][-1] < disco:
             erro = f"{numero} (disco {disco} sobre disco {pinos[destino][-1]})"
+            status = "lance_ilegal"
             break
         pinos[origem].pop()
         pinos[destino].append(disco)
 
     resolveu = erro is None and pinos["C"] == list(range(discos, 0, -1))
     if not resolveu and erro is None:
-        erro = f"{len(movimentos) + 1} (torre incompleta)"
+        erro = f"{len(efetivos) + 1} (torre incompleta)"
+        status = "torre_incompleta"
 
-    return resolveu, len(movimentos), erro
+    estado_final = json.dumps(pinos, ensure_ascii=False)
+    return resolveu, len(efetivos), erro, status, estado_final
 
 
-# Monta o prompt, incluindo RAG e/ou memoria quando ativados.
+# Monta o prompt. A base e identica nos tres modos; so contexto e memoria variam.
 def montar_prompt(erros, contexto_rag=None):
     prompt = (
         f"Resolva a Torre de Hanói com {DISCOS} discos. Os pinos são A, B e C, "
@@ -197,14 +334,12 @@ def montar_prompt(erros, contexto_rag=None):
         prompt += (
             "\n\nConhecimentos recuperados sobre a Torre de Hanói:\n"
             + contexto_rag
-            + "\n\nUse esses conhecimentos como orientação, sem copiar exemplos. "
-            "Planeje internamente a escolha da haste auxiliar, mantenha a haste "
-            "de destino livre para o maior disco e confira a validade de cada "
-            "movimento. Não escreva o planejamento.\n"
         )
     prompt += (
-        " Responda só com os movimentos, um por linha, no formato A->C. "
-        "Sem explicações."
+        "\n\nPlaneje internamente a escolha da haste auxiliar, mantenha a haste "
+        "de destino livre para o maior disco e confira a validade de cada "
+        "movimento. Não escreva o planejamento. Responda só com os movimentos, "
+        "um por linha, no formato A->C. Sem explicações."
     )
     if USAR_MEMORIA and erros:
         prompt += (
@@ -216,19 +351,49 @@ def montar_prompt(erros, contexto_rag=None):
 
 
 # Envia o prompt ao Ollama
-def perguntar_ollama(modelo, prompt):
+def perguntar_ollama(modelo, prompt, temperatura=0, seed=None):
+    opcoes = {"temperature": temperatura}
+    if seed is not None:
+        opcoes["seed"] = seed
     resposta = requests.post(
         OLLAMA_URL,
         json={
             "model": modelo,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0},
+            "options": opcoes,
         },
         timeout=TIMEOUT,
     )
     resposta.raise_for_status()
     return resposta.json().get("response", "")
+
+
+# Busca o digest exato do modelo no Ollama para registrar a versao usada.
+def obter_digest_modelo(modelo):
+    try:
+        resposta = requests.get(OLLAMA_TAGS_URL, timeout=10)
+        resposta.raise_for_status()
+        modelos = resposta.json().get("models", [])
+    except (requests.exceptions.RequestException, ValueError):
+        return None
+
+    alvo = modelo.strip()
+    for item in modelos:
+        if alvo in (item.get("name"), item.get("model")):
+            return item.get("digest")
+    if ":" in alvo:
+        return None
+    for item in modelos:
+        nome = item.get("name") or item.get("model") or ""
+        if nome.split(":")[0] == alvo:
+            return item.get("digest")
+    return None
+
+
+# Limita textos de erro ao tamanho da coluna erro_no_movimento.
+def _texto_curto(texto, limite=255):
+    return " ".join(str(texto).split())[:limite]
 
 
 def main():
@@ -242,6 +407,7 @@ def main():
 
     contexto_rag = ""
     trechos = []
+    chunks_info = None
     if USAR_RAG:
         print(f"RAG: ativado | modelo de embedding: {MODELO_EMBEDDING}")
         try:
@@ -260,6 +426,17 @@ def main():
                 conn, pergunta, MODELO_EMBEDDING, PASTA_CONHECIMENTO, TOP_K
             )
             contexto_rag = rag.montar_contexto(trechos)
+            chunks_info = json.dumps(
+                [
+                    {
+                        "id": trecho.get("id"),
+                        "documento": trecho["documento"],
+                        "score": round(trecho["score"], 4),
+                    }
+                    for trecho in trechos
+                ],
+                ensure_ascii=False,
+            )
             documentos = sorted({t["documento"] for t in trechos})
             print(
                 f"RAG: {len(trechos)} trechos recuperados | documentos: "
@@ -294,17 +471,23 @@ def main():
 
     print(
         f"Modelos: {len(MODELOS)} | discos: {DISCOS} | repeticoes: {REPETICOES} "
-        f"| memoria: {USAR_MEMORIA} | rag: {USAR_RAG} "
+        f"| memoria: {USAR_MEMORIA} | rag: {USAR_RAG} | prompt: {VERSAO_PROMPT} "
         f"| minimo de movimentos: {minimos}\n"
     )
 
     for modelo in MODELOS:
-        execucao_id = criar_execucao(conn, modelo, DISCOS, REPETICOES, modo)
-        print(f"=== {modelo} | execucao #{execucao_id} | modo: {modo} ===")
+        digest = obter_digest_modelo(modelo)
+        execucao_id = criar_execucao(
+            conn, modelo, DISCOS, REPETICOES, modo, digest, VERSAO_PROMPT
+        )
+        print(
+            f"=== {modelo} | execucao #{execucao_id} | modo: {modo} "
+            f"| prompt: {VERSAO_PROMPT} ==="
+        )
         tempos = []
         movimentos_ok = []
         acertos = 0
-        gravadas = 0
+        tentativas_registradas = 0
 
         # Repete o teste para cada modelo.
         for tentativa in range(1, REPETICOES + 1):
@@ -315,76 +498,117 @@ def main():
             try:
                 texto = perguntar_ollama(modelo, prompt)
             except requests.exceptions.ConnectionError:
+                tempo = time.time() - inicio
+                registrar_resultado(
+                    conn, execucao_id, modelo, tentativa, minimos,
+                    False, 0, "ollama offline", tempo, "erro_ollama",
+                    prompt, None, None, chunks_info,
+                )
+                print(
+                    f"tentativa {tentativa}/{REPETICOES}: status: erro_ollama "
+                    f"(Ollama offline) | {tempo:.2f}s"
+                )
                 print("ERRO: o Ollama nao esta rodando em http://localhost:11434.")
                 print("Inicie com 'ollama serve' e rode o script de novo.")
                 conn.close()
                 sys.exit(1)
             except requests.exceptions.ReadTimeout:
-                print(f"tentativa {tentativa}/{REPETICOES}: tempo esgotado, pulando...")
+                tempo = time.time() - inicio
+                registrar_resultado(
+                    conn, execucao_id, modelo, tentativa, minimos,
+                    False, 0, "timeout", tempo, "timeout",
+                    prompt, None, None, chunks_info,
+                )
+                tentativas_registradas += 1
+                print(
+                    f"tentativa {tentativa}/{REPETICOES}: status: timeout | "
+                    f"{tempo:.2f}s"
+                )
                 continue
             except requests.exceptions.HTTPError as e:
-                if e.response is not None and e.response.status_code == 404:
-                    print(f"ERRO: modelo '{modelo}' nao encontrado. Rode: ollama pull {modelo}")
+                tempo = time.time() - inicio
+                codigo = e.response.status_code if e.response is not None else None
+                if codigo == 404:
+                    registrar_resultado(
+                        conn, execucao_id, modelo, tentativa, minimos,
+                        False, 0, "HTTP 404 (modelo ausente)", tempo,
+                        "modelo_ausente", prompt, None, chunks_info,
+                    )
+                    tentativas_registradas += 1
+                    print(
+                        f"ERRO: modelo '{modelo}' nao encontrado. "
+                        f"Rode: ollama pull {modelo}"
+                    )
                     break
-                print(f"tentativa {tentativa}/{REPETICOES}: erro HTTP ({e}), pulando...")
+                registrar_resultado(
+                    conn, execucao_id, modelo, tentativa, minimos,
+                    False, 0, _texto_curto(f"HTTP {codigo}: {e}"), tempo,
+                    "http_erro", prompt, None, chunks_info,
+                )
+                tentativas_registradas += 1
+                print(
+                    f"tentativa {tentativa}/{REPETICOES}: status: http_erro "
+                    f"({e}) | {tempo:.2f}s"
+                )
                 continue
             except requests.exceptions.RequestException as e:
-                print(f"tentativa {tentativa}/{REPETICOES}: falha no Ollama ({e}), pulando...")
+                tempo = time.time() - inicio
+                registrar_resultado(
+                    conn, execucao_id, modelo, tentativa, minimos,
+                    False, 0, _texto_curto(f"falha no Ollama: {e}"), tempo,
+                    "erro_ollama", prompt, None, chunks_info,
+                )
+                tentativas_registradas += 1
+                print(
+                    f"tentativa {tentativa}/{REPETICOES}: status: erro_ollama "
+                    f"({e}) | {tempo:.2f}s"
+                )
                 continue
             tempo = time.time() - inicio
 
-            resolveu, feitos, erro = validar(texto, DISCOS)
-
-            # Grava a tentativa com parametros (%s), nunca concatenando SQL.
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO resultados
-                    (data, execucao_id, modelo, discos, tentativa, resolveu,
-                     movimentos_feitos, movimentos_minimos, erro_no_movimento,
-                     tempo_segundos, usou_memoria)
-                VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    execucao_id,
-                    modelo,
-                    DISCOS,
-                    tentativa,
-                    resolveu,
-                    feitos,
-                    minimos,
-                    erro,
-                    round(tempo, 2),
-                    USAR_MEMORIA,
-                ),
+            resolveu, feitos, erro, status, estado_final = validar(texto, DISCOS)
+            registrar_resultado(
+                conn, execucao_id, modelo, tentativa, minimos,
+                resolveu, feitos, erro, tempo, status,
+                prompt, texto, estado_final, chunks_info,
             )
-            conn.commit()
-            cursor.close()
 
-            gravadas += 1
-            tempos.append(tempo)
+            tentativas_registradas += 1
+            if status in ("ok", "lance_ilegal", "torre_incompleta"):
+                tempos.append(tempo)
             if resolveu:
                 acertos += 1
                 movimentos_ok.append(feitos)
 
-            status = "OK" if resolveu else f"erro: {erro}"
-            print(f"tentativa {tentativa}/{REPETICOES}: {status} | "
-                  f"{feitos} movimentos | {tempo:.2f}s")
+            if status == "ok":
+                situacao = "OK"
+            else:
+                situacao = f"{status}: {erro}"
+            print(
+                f"tentativa {tentativa}/{REPETICOES}: {situacao} | "
+                f"{feitos} movimentos | {tempo:.2f}s"
+            )
 
         # Resumo simples do modelo.
         print()
-        if gravadas == 0:
-            print(f"Resumo {modelo}: nenhuma tentativa concluida.\n")
+        if tentativas_registradas == 0:
+            print(f"Resumo {modelo}: nenhuma tentativa registrada.\n")
             continue
 
-        taxa = acertos / gravadas * 100
-        print(f"Acertos: {acertos} de {gravadas} = {taxa:.0f}%")
+        taxa = acertos / tentativas_registradas * 100
+        print(f"Acertos: {acertos} de {tentativas_registradas} = {taxa:.0f}%")
         if movimentos_ok:
             media = sum(movimentos_ok) / len(movimentos_ok)
             print(f"Media de movimentos (acertos): {media:.1f} | minimo: {minimos}")
         else:
             print("Media de movimentos (acertos): sem acertos")
-        print(f"Tempo medio: {sum(tempos) / len(tempos):.2f}s\n")
+        if tempos:
+            print(
+                f"Tempo medio (respostas validas): "
+                f"{sum(tempos) / len(tempos):.2f}s\n"
+            )
+        else:
+            print("Tempo medio (respostas validas): sem respostas validas\n")
 
     conn.close()
 
