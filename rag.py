@@ -14,6 +14,7 @@ OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 TIMEOUT_EMBEDDING = 120
 MAX_CARACTERES_TRECHO = 700
 VERSAO_DIVISAO = "v2"  # muda quando a forma de dividir os documentos mudar
+TOP_K_RAG = 10
 
 
 # Verifica se o modelo de embedding esta instalado, sem baixar nada.
@@ -210,17 +211,22 @@ def buscar(conn, pergunta, modelo_embedding, pasta, limite=3):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT documento, hash_documento, texto, embedding
+        SELECT id, documento, hash_documento, texto, embedding
         FROM rag_trechos
         WHERE modelo_embedding = %s
         """,
         (modelo_embedding,),
     )
     linhas = []
-    for documento, hash_documento, texto, embedding in cursor.fetchall():
+    for id_trecho, documento, hash_documento, texto, embedding in cursor.fetchall():
         if (documento, hash_documento) in hashes_atuais:
             linhas.append(
-                {"documento": documento, "texto": texto, "embedding": embedding}
+                {
+                    "id": id_trecho,
+                    "documento": documento,
+                    "texto": texto,
+                    "embedding": embedding,
+                }
             )
     cursor.close()
 
@@ -239,8 +245,17 @@ def montar_contexto(trechos):
 
 # Pergunta fixa usada para recuperar conhecimentos sobre o problema.
 def pergunta_para_discos(discos):
+    return pergunta_para_instancia(discos, "A", "C", "B")
+
+
+# Consulta concreta com número de discos e papéis das hastes.
+def pergunta_para_instancia(discos, origem, destino, auxiliar):
     return (
-        f"Como planejar a solucao da Torre de Hanói com {discos} discos: "
-        "qual haste usar como auxiliar, como liberar a haste de destino para o "
-        "disco maior, como mover os discos menores e como verificar cada movimento?"
+        f"mover {discos} discos da haste {origem} para a haste {destino} "
+        f"usando {auxiliar} como auxiliar"
     )
+
+
+# Consulta específica pelo título do bloco resolvido.
+def pergunta_para_bloco(discos, origem, destino, auxiliar):
+    return f"{discos} discos de {origem} para {destino} (auxiliar {auxiliar})"
