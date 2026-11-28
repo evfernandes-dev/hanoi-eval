@@ -168,3 +168,83 @@ def criar_execucao(
         cursor.close()
 
 
+def _json(valor):
+    """Serializa dicts/listas; strings e None passam como estão."""
+    if valor is None or isinstance(valor, str):
+        return valor
+    return json.dumps(valor, ensure_ascii=False)
+
+
+def _texto_curto(texto, limite=255):
+    if texto is None:
+        return None
+    return " ".join(str(texto).split())[:limite]
+
+
+def registrar_resultado(
+    conn,
+    *,
+    execucao_id,
+    modelo,
+    discos,
+    tentativa,
+    rodada,
+    resolveu,
+    movimentos_feitos,
+    movimentos_minimos,
+    erro,
+    tempo_segundos,
+    status,
+    prompt,
+    resposta_bruta,
+    estado_final,
+    chunks=None,
+    temperatura=None,
+    seed=None,
+    usou_rag=False,
+    usou_memoria=False,
+):
+    """Grava uma chamada ao modelo, inclusive quando ela falha."""
+    parametros = {
+        "execucao_id": execucao_id,
+        "modelo": modelo,
+        "discos": discos,
+        "tentativa": tentativa,
+        "rodada": rodada,
+        "resolveu": int(bool(resolveu)),
+        "movimentos_feitos": movimentos_feitos,
+        "movimentos_minimos": movimentos_minimos,
+        "erro_no_movimento": _texto_curto(erro),
+        "tempo_segundos": round(float(tempo_segundos), 2),
+        "status": status,
+        "prompt": prompt,
+        "resposta_bruta": resposta_bruta,
+        "estado_final": _json(estado_final),
+        "chunks": _json(chunks),
+        "temperatura": temperatura,
+        "seed": seed,
+        "usou_rag": int(bool(usou_rag)),
+        "usou_memoria": int(bool(usou_memoria)),
+    }
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO resultados
+                (data, execucao_id, modelo, discos, tentativa, resolveu,
+                 movimentos_feitos, movimentos_minimos, erro_no_movimento,
+                 tempo_segundos, usou_memoria, status, prompt, resposta_bruta,
+                 estado_final, rodada, temperatura, seed, usou_rag, chunks)
+            VALUES (NOW(), %(execucao_id)s, %(modelo)s, %(discos)s,
+                    %(tentativa)s, %(resolveu)s, %(movimentos_feitos)s,
+                    %(movimentos_minimos)s, %(erro_no_movimento)s,
+                    %(tempo_segundos)s, %(usou_memoria)s, %(status)s,
+                    %(prompt)s, %(resposta_bruta)s, %(estado_final)s,
+                    %(rodada)s, %(temperatura)s, %(seed)s, %(usou_rag)s,
+                    %(chunks)s)
+            """,
+            parametros,
+        )
+        conn.commit()
+    finally:
+        cursor.close()
