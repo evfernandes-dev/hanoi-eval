@@ -300,3 +300,156 @@ def executar_tentativa_simples(
     )
 
 
+def executar_tentativa_blocos(conn, execucao_id, discos, tentativa, seed):
+    estado = validator.estado_inicial(discos)
+    blocos = decompor(discos)
+    tempo_total = 0.0
+    movimentos_total = 0
+    etapas_ok = 0
+
+    for etapa, bloco in enumerate(blocos, start=1):
+        plano_bloco = plano(
+            bloco["k"],
+            bloco["origem"],
+            bloco["destino"],
+            bloco["auxiliar"],
+        )
+        esperado = validator.aplicar(estado, plano_bloco)
+        maximo_chamadas = len(plano_bloco) + 2
+        feitos_etapa = 0
+        chamadas_etapa = 0
+        prompt = ""
+
+        while chamadas_etapa < maximo_chamadas and estado != esperado:
+            prompt = montar_prompt_bloco(
+                discos,
+                estado,
+                etapa,
+                len(blocos),
+                bloco["k"],
+                bloco["origem"],
+                bloco["destino"],
+                bloco["auxiliar"],
+                feitos_etapa,
+            )
+
+            inicio = time.perf_counter()
+            try:
+                texto = chamar_ollama(
+                    prompt, temperatura=config.TEMPERATURA, seed=seed
+                )
+            except OllamaErro as erro:
+                tempo = time.perf_counter() - inicio
+                tempo_total += tempo
+                registrar_falha(
+                    conn,
+                    execucao_id,
+                    discos,
+                    tentativa,
+                    etapa,
+                    str(erro),
+                    tempo,
+                    erro.status,
+                    prompt,
+                    None,
+                    seed,
+                    estado_final=json.dumps(estado, ensure_ascii=False),
+                )
+                print(
+                    f"  tentativa {tentativa} etapa {etapa}: {erro.status} "
+                    f"({erro}) | {tempo:.2f}s"
+                )
+                if erro.fatal:
+                    raise
+                return Tentativa(
+                    False, False, tempo_total, movimentos_total, etapas_ok
+                )
+
+            tempo = time.perf_counter() - inicio
+            tempo_total += tempo
+            chamadas_etapa += 1
+            aplicacao = validator.aplicar_sequencia(texto, estado)
+            movimentos_total += len(aplicacao.movimentos)
+            feitos_etapa += len(aplicacao.movimentos)
+            resolveu = aplicacao.estado["C"] == list(
+                range(discos, 0, -1)
+            )
+
+            database.registrar_resultado(
+                conn,
+                execucao_id=execucao_id,
+                modelo=config.MODELO,
+                discos=discos,
+                tentativa=tentativa,
+                rodada=etapa,
+                resolveu=resolveu,
+                movimentos_feitos=len(aplicacao.movimentos),
+                movimentos_minimos=2**discos - 1,
+                erro=aplicacao.erro,
+                tempo_segundos=tempo,
+                status=aplicacao.status,
+                prompt=prompt,
+                resposta_bruta=texto,
+                estado_final=json.dumps(
+                    aplicacao.estado, ensure_ascii=False
+                ),
+                chunks=None,
+                temperatura=config.TEMPERATURA,
+                seed=seed,
+                usou_rag=False,
+            )
+            print(
+                f"  tentativa {tentativa} etapa {etapa}/{len(blocos)} "
+                f"chamada {chamadas_etapa}: {aplicacao.status} | "
+                f"{len(aplicacao.movimentos)} movimentos | {tempo:.2f}s"
+            )
+
+            if aplicacao.status != "ok":
+                return Tentativa(
+                    False, True, tempo_total, movimentos_total, etapas_ok
+                )
+            estado = aplicacao.estado
+            if estado == esperado:
+                etapas_ok += 1
+            if resolveu:
+                return Tentativa(
+                    True, True, tempo_total, movimentos_total, etapas_ok
+                )
+
+        if estado != esperado:
+            erro = (
+                "bloco não atingiu o estado esperado após "
+                f"{chamadas_etapa} chamadas e {feitos_etapa} movimentos"
+            )
+            registrar_falha(
+                conn,
+                execucao_id,
+                discos,
+                tentativa,
+                etapa,
+                erro,
+                0.0,
+                "torre_incompleta",
+                prompt,
+                None,
+                seed,
+                estado_final=json.dumps(estado, ensure_ascii=False),
+            )
+            print(
+                f"  tentativa {tentativa} etapa {etapa}: "
+                f"torre_incompleta | {erro}"
+            )
+            return Tentativa(
+                False, True, tempo_total, movimentos_total, etapas_ok
+            )
+
+        if estado["C"] == list(range(discos, 0, -1)):
+            return Tentativa(
+                True, True, tempo_total, movimentos_total, etapas_ok
+            )
+
+    return Tentativa(
+        False, True, tempo_total, movimentos_total, etapas_ok
+    )
+
+
