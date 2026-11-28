@@ -108,3 +108,56 @@ def modelo_instalado(modelo):
     return any(nome.split(":")[0] == alvo for nome in nomes)
 
 
+def indexar(conn, pasta, modelo_embedding):
+    """Indexa no MySQL apenas os documentos ainda não indexados."""
+    for doc in carregar_documentos(pasta):
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM rag_trechos
+                WHERE documento = %s AND hash_documento = %s
+                  AND modelo_embedding = %s
+                """,
+                (doc["documento"], doc["hash"], modelo_embedding),
+            )
+            existentes = cursor.fetchone()[0]
+        finally:
+            cursor.close()
+
+        if existentes:
+            print(f"RAG: {doc['documento']} já indexado ({existentes} trechos).")
+            continue
+
+        print(f"RAG: indexando {doc['documento']} ({len(doc['trechos'])} trechos)...")
+        vetores = [
+            obter_embedding(trecho, modelo_embedding) for trecho in doc["trechos"]
+        ]
+
+        cursor = conn.cursor()
+        try:
+            for ordem, (trecho, vetor) in enumerate(
+                zip(doc["trechos"], vetores), start=1
+            ):
+                cursor.execute(
+                    """
+                    INSERT INTO rag_trechos
+                        (documento, hash_documento, modelo_embedding, ordem,
+                         texto, embedding, criado_em)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    """,
+                    (
+                        doc["documento"],
+                        doc["hash"],
+                        modelo_embedding,
+                        ordem,
+                        trecho,
+                        json.dumps(vetor),
+                    ),
+                )
+            conn.commit()
+        finally:
+            cursor.close()
+        print(f"RAG: {doc['documento']} indexado.")
+
+
