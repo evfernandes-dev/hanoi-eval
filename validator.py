@@ -88,3 +88,50 @@ def extrair_movimentos(resposta):
     return movimentos
 
 
+def aplicar(estado, movimentos):
+    """Aplica uma sequência que já se sabe legal (usada para o plano-alvo)."""
+    novo = copiar_estado(estado)
+    for origem, destino in movimentos:
+        novo[destino].append(novo[origem].pop())
+    return novo
+
+
+def aplicar_sequencia(resposta, estado):
+    """Simula os movimentos a partir de um estado e devolve o novo estado."""
+    movimentos = extrair_movimentos(resposta)
+    if not movimentos:
+        return Aplicacao(
+            copiar_estado(estado),
+            [],
+            "formato inválido (nenhum movimento A->C encontrado)",
+            "formato_invalido",
+        )
+
+    pinos = copiar_estado(estado)
+    aplicados = []
+    for numero, (origem, destino) in enumerate(
+        [(origem, destino) for origem, destino in movimentos if origem != destino],
+        start=1,
+    ):
+        if not pinos[origem]:
+            return Aplicacao(
+                pinos,
+                aplicados,
+                f"{numero} (pino {origem} vazio)",
+                "lance_ilegal",
+            )
+        disco = pinos[origem][-1]
+        if pinos[destino] and pinos[destino][-1] < disco:
+            return Aplicacao(
+                pinos,
+                aplicados,
+                f"{numero} (disco {disco} sobre disco {pinos[destino][-1]})",
+                "lance_ilegal",
+            )
+        pinos[origem].pop()
+        pinos[destino].append(disco)
+        aplicados.append((origem, destino))
+
+    return Aplicacao(pinos, aplicados, None, "ok")
+
+
