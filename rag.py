@@ -81,3 +81,30 @@ def _dividir_secao_longa(secao, max_caracteres):
     return trechos
 
 
+def obter_embedding(texto, modelo_embedding):
+    """Gera o embedding de um texto usando o endpoint /api/embed do Ollama."""
+    resposta = requests.post(
+        config.OLLAMA_EMBED_URL,
+        json={"model": modelo_embedding, "input": texto},
+        timeout=config.TIMEOUT_EMBEDDING,
+    )
+    resposta.raise_for_status()
+    embeddings = resposta.json().get("embeddings") or []
+    if not embeddings:
+        raise RuntimeError("O Ollama não retornou embeddings.")
+    return embeddings[0]
+
+
+def modelo_instalado(modelo):
+    """Verifica se um modelo está instalado, sem baixar nada."""
+    resposta = requests.get(config.OLLAMA_TAGS_URL, timeout=10)
+    resposta.raise_for_status()
+    nomes = [item.get("name", "") for item in resposta.json().get("models", [])]
+    alvo = modelo.strip()
+    if alvo in nomes:
+        return True
+    if ":" in alvo:
+        return False
+    return any(nome.split(":")[0] == alvo for nome in nomes)
+
+
