@@ -135,3 +135,38 @@ def aplicar_sequencia(resposta, estado):
     return Aplicacao(pinos, aplicados, None, "ok")
 
 
+def validar_torre(resposta, discos):
+    """Valida a solução completa a partir do estado inicial."""
+    inicial = estado_inicial(discos)
+    aplicacao = aplicar_sequencia(resposta, inicial)
+    estado_final = json.dumps(aplicacao.estado, ensure_ascii=False)
+
+    if aplicacao.status == "formato_invalido":
+        return Resultado(
+            False, 0, aplicacao.erro, aplicacao.status, aplicacao.estado, estado_final
+        )
+    if aplicacao.status == "lance_ilegal":
+        return Resultado(
+            False,
+            len(aplicacao.movimentos),
+            aplicacao.erro,
+            aplicacao.status,
+            aplicacao.estado,
+            estado_final,
+        )
+
+    resolvido = aplicacao.estado["C"] == list(range(discos, 0, -1))
+    if not resolvido:
+        erro = f"{len(aplicacao.movimentos) + 1} (torre incompleta)"
+        return Resultado(
+            False,
+            len(aplicacao.movimentos),
+            erro,
+            "torre_incompleta",
+            aplicacao.estado,
+            estado_final,
+        )
+
+    return Resultado(
+        True, len(aplicacao.movimentos), None, "ok", aplicacao.estado, estado_final
+    )
