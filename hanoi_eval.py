@@ -198,3 +198,105 @@ def plano(k, origem, destino, auxiliar):
     )
 
 
+def registrar_falha(
+    conn,
+    execucao_id,
+    discos,
+    tentativa,
+    rodada,
+    erro,
+    tempo,
+    status,
+    prompt,
+    chunks,
+    seed,
+    estado_final=None,
+):
+    database.registrar_resultado(
+        conn,
+        execucao_id=execucao_id,
+        modelo=config.MODELO,
+        discos=discos,
+        tentativa=tentativa,
+        rodada=rodada,
+        resolveu=False,
+        movimentos_feitos=0,
+        movimentos_minimos=2**discos - 1,
+        erro=erro,
+        tempo_segundos=tempo,
+        status=status,
+        prompt=prompt,
+        resposta_bruta=None,
+        estado_final=estado_final,
+        chunks=chunks,
+        temperatura=config.TEMPERATURA,
+        seed=seed,
+        usou_rag=bool(chunks),
+    )
+
+
+def executar_tentativa_simples(
+    conn, execucao_id, discos, tentativa, prompt, seed, chunks
+):
+    inicio = time.perf_counter()
+    try:
+        texto = chamar_ollama(
+            prompt, temperatura=config.TEMPERATURA, seed=seed
+        )
+    except OllamaErro as erro:
+        tempo = time.perf_counter() - inicio
+        registrar_falha(
+            conn,
+            execucao_id,
+            discos,
+            tentativa,
+            1,
+            str(erro),
+            tempo,
+            erro.status,
+            prompt,
+            chunks,
+            seed,
+        )
+        print(f"  tentativa {tentativa}: {erro.status} ({erro}) | {tempo:.2f}s")
+        if erro.fatal:
+            raise
+        return Tentativa(False, False, tempo, 0)
+
+    tempo = time.perf_counter() - inicio
+    resultado = validator.validar_torre(texto, discos)
+    database.registrar_resultado(
+        conn,
+        execucao_id=execucao_id,
+        modelo=config.MODELO,
+        discos=discos,
+        tentativa=tentativa,
+        rodada=1,
+        resolveu=resultado.resolveu,
+        movimentos_feitos=resultado.movimentos,
+        movimentos_minimos=2**discos - 1,
+        erro=resultado.erro,
+        tempo_segundos=tempo,
+        status=resultado.status,
+        prompt=prompt,
+        resposta_bruta=texto,
+        estado_final=resultado.estado_final,
+        chunks=chunks,
+        temperatura=config.TEMPERATURA,
+        seed=seed,
+        usou_rag=bool(chunks),
+    )
+    situacao = (
+        "OK"
+        if resultado.status == "ok"
+        else f"{resultado.status}: {resultado.erro}"
+    )
+    print(
+        f"  tentativa {tentativa}: {situacao} | "
+        f"{resultado.movimentos} movimentos | {tempo:.2f}s"
+    )
+    return Tentativa(
+        resultado.resolveu, True, tempo, resultado.movimentos
+    )
+
+
