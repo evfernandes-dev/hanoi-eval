@@ -453,3 +453,179 @@ def executar_tentativa_blocos(conn, execucao_id, discos, tentativa, seed):
     )
 
 
+def resumir(estrategia, discos, tentativas):
+    validas = [tentativa for tentativa in tentativas if tentativa.valida]
+    sucessos = [tentativa for tentativa in validas if tentativa.sucesso]
+    total = len(validas)
+    taxa = len(sucessos) / total * 100 if total else 0.0
+
+    print("\n=== Resumo ===")
+    print(
+        f"Tentativas válidas: {total} | "
+        f"falhas de infraestrutura: {len(tentativas) - total}"
+    )
+    print(f"Acertos: {len(sucessos)} de {total} = {taxa:.0f}%")
+    if sucessos:
+        media = sum(t.movimentos for t in sucessos) / len(sucessos)
+        print(
+            f"Média de movimentos nos acertos: {media:.1f} | "
+            f"mínimo: {2**discos - 1}"
+        )
+    else:
+        print("Média de movimentos nos acertos: sem acertos")
+    if validas:
+        tempo_medio = sum(t.tempo for t in validas) / len(validas)
+        print(f"Tempo médio por tentativa válida: {tempo_medio:.2f}s")
+    if estrategia == "blocos":
+        print(
+            f"Bloco 1 concluído: "
+            f"{sum(1 for t in validas if t.etapas_ok >= 1)}/{total}"
+        )
+        print(
+            f"Bloco 2 concluído: "
+            f"{sum(1 for t in validas if t.etapas_ok >= 2)}/{total}"
+        )
+        print(
+            f"Bloco 3 concluído: "
+            f"{sum(1 for t in validas if t.etapas_ok >= 3)}/{total}"
+        )
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Laboratório Torre de Hanói com LLM local."
+    )
+    parser.add_argument(
+        "--estrategia",
+        choices=("baseline", "rag", "blocos"),
+        required=True,
+    )
+    parser.add_argument("--discos", type=int, default=config.DISCOS_PADRAO)
+    parser.add_argument(
+        "--repeticoes", type=int, default=config.REPETICOES_PADRAO
+    )
+    args = parser.parse_args(argv)
+
+    if args.discos < 1 or args.repeticoes < 1:
+        print("ERRO: discos e repetições devem ser maiores que zero.")
+        return 1
+
+    usar_rag = args.estrategia == "rag"
+    if not verificar_modelos(usar_rag):
+        return 1
+
+    try:
+        conn = database.conectar()
+    except mysql.connector.Error as erro:
+        print(f"ERRO: não foi possível conectar ao MySQL: {erro}")
+        print("Confira o .env e se o MySQL está rodando.")
+        return 1
+
+    try:
+        database.criar_tabelas(conn)
+        digest = obter_digest_modelo()
+        contexto = None
+        chunks = None
+        rag_versao = None
+
+        if usar_rag:
+            try:
+                rag.indexar(
+                    conn, config.PASTA_CONHECIMENTO, config.MODELO_EMBEDDING
+                )
+                trechos = rag.buscar(
+                    conn,
+                    rag.pergunta_para_discos(args.discos),
+                    config.MODELO_EMBEDDING,
+                    config.PASTA_CONHECIMENTO,
+                    config.TOP_K,
+                )
+            except (requests.exceptions.RequestException, RuntimeError) as erro:
+                print(f"ERRO ao preparar o RAG: {erro}")
+                return 1
+            if not trechos:
+                print("ERRO: nenhum trecho recuperado. Verifique knowledge/.")
+                return 1
+            contexto = rag.montar_contexto(trechos)
+            chunks = json.dumps(
+                [
+                    {
+                        "id": trecho.get("id"),
+                        "documento": trecho["documento"],
+                        "score": round(trecho["score"], 4),
+                    }
+                    for trecho in trechos
+                ],
+                ensure_ascii=False,
+            )
+            rag_versao = rag.versao_corpus(config.PASTA_CONHECIMENTO)
+            print(
+                f"RAG: {len(trechos)} trechos | corpus {rag_versao} | "
+                f"{len(contexto)} caracteres"
+            )
+            for trecho in trechos:
+                print(
+                    f"  [{trecho.get('id')}] {trecho['documento']} | "
+                    f"score={trecho['score']:.4f}"
+                )
+
+        execucao_id = database.criar_execucao(
+            conn,
+            modelo=config.MODELO,
+            discos=args.discos,
+            repeticoes=args.repeticoes,
+            modo=args.estrategia,
+            modelo_digest=digest,
+            prompt_versao=config.VERSAO_PROMPT,
+            rag_versao=rag_versao,
+        )
+        print(
+            f"=== execução #{execucao_id} | {config.MODELO} | "
+            f"{args.discos} discos | estratégia {args.estrategia} | "
+            f"prompt {config.VERSAO_PROMPT} ==="
+        )
+
+        prompt_simples = None
+        if args.estrategia == "baseline":
+            prompt_simples = montar_prompt_base(args.discos)
+        elif usar_rag:
+            prompt_simples = montar_prompt_rag(args.discos, contexto)
+
+        tentativas = []
+        for numero, seed in enumerate(
+            config.seeds(args.repeticoes), start=1
+        ):
+            print(f"\ntentativa {numero}/{args.repeticoes} | seed {seed}")
+            try:
+                if args.estrategia == "blocos":
+                    tentativa = executar_tentativa_blocos(
+                        conn, execucao_id, args.discos, numero, seed
+                    )
+                else:
+                    tentativa = executar_tentativa_simples(
+                        conn,
+                        execucao_id,
+                        args.discos,
+                        numero,
+                        prompt_simples,
+                        seed,
+                        chunks,
+                    )
+            except OllamaErro as erro:
+                print(f"\nERRO FATAL: {erro}")
+                tentativas.append(Tentativa(False, False, 0.0, 0))
+                break
+            tentativas.append(tentativa)
+
+        resumir(args.estrategia, args.discos, tentativas)
+    except mysql.connector.Error as erro:
+        print(f"\nERRO no MySQL: {erro}")
+        return 1
+    finally:
+        conn.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
