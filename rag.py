@@ -230,3 +230,19 @@ def montar_contexto(trechos):
     )
 
 
+def versao_corpus(pasta):
+    """Versão curta e reproduzível do corpus (cabe em VARCHAR(10))."""
+    documentos = carregar_documentos(pasta)
+    if not documentos:
+        return "vazio"
+    base = "\n".join(
+        f"{doc['documento']}:{doc['hash']}" for doc in documentos
+    )
+    return "k" + hashlib.sha256(base.encode("utf-8")).hexdigest()[:8]
+
+
+def pergunta_para_discos(discos, origem="A", destino="C", auxiliar="B"):
+    return (
+        f"mover {discos} discos da haste {origem} para a haste {destino} "
+        f"usando {auxiliar} como auxiliar"
+    )
