@@ -142,3 +142,59 @@ def montar_prompt_rag(discos, contexto):
     )
 
 
+def montar_prompt_bloco(
+    discos,
+    estado,
+    etapa,
+    total,
+    k,
+    origem,
+    destino,
+    auxiliar,
+    feitos_etapa,
+):
+    minimo_etapa = 2**k - 1
+    rotulo = "disco" if k == 1 else "discos"
+    return (
+        f"Você está resolvendo a Torre de Hanói com {discos} discos.\n"
+        "Estado atual (listas da base para o topo): "
+        f"{validator.estado_para_texto(estado)}.\n\n"
+        f"Etapa {etapa} de {total}: mover {k} {rotulo} da haste {origem} para a "
+        f"haste {destino} usando {auxiliar} como auxiliar.\n"
+        f"Movimentos já feitos nesta etapa: {feitos_etapa} de no mínimo "
+        f"{minimo_etapa}.\n\n"
+        "Escolha o próximo movimento válido. Responda só com um movimento no "
+        "formato A->C. Sem explicações."
+    )
+
+
+def decompor(discos, origem="A", destino="C", auxiliar="B"):
+    """Decompõe o problema nos três blocos clássicos."""
+    if discos == 1:
+        return [
+            {
+                "k": 1,
+                "origem": origem,
+                "destino": destino,
+                "auxiliar": auxiliar,
+            }
+        ]
+    sub = discos - 1
+    return [
+        {"k": sub, "origem": origem, "destino": auxiliar, "auxiliar": destino},
+        {"k": 1, "origem": origem, "destino": destino, "auxiliar": auxiliar},
+        {"k": sub, "origem": auxiliar, "destino": destino, "auxiliar": origem},
+    ]
+
+
+def plano(k, origem, destino, auxiliar):
+    """Plano determinístico mínimo de k discos entre duas hastes."""
+    if k == 0:
+        return []
+    return (
+        plano(k - 1, origem, auxiliar, destino)
+        + [(origem, destino)]
+        + plano(k - 1, auxiliar, destino, origem)
+    )
+
+
