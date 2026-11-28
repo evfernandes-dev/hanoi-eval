@@ -129,3 +129,42 @@ def criar_tabelas(conn):
                 cursor.close()
 
 
+def criar_execucao(
+    conn,
+    *,
+    modelo,
+    discos,
+    repeticoes,
+    modo,
+    modelo_digest,
+    prompt_versao,
+    rag_versao=None,
+):
+    """Cria uma execução e devolve o id gerado."""
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO execucoes
+                (data, modelo, discos, repeticoes, modo, modelo_digest,
+                 prompt_versao, rag_versao)
+            VALUES (NOW(), %(modelo)s, %(discos)s, %(repeticoes)s, %(modo)s,
+                    %(modelo_digest)s, %(prompt_versao)s, %(rag_versao)s)
+            """,
+            {
+                "modelo": modelo,
+                "discos": discos,
+                "repeticoes": repeticoes,
+                "modo": modo,
+                "modelo_digest": modelo_digest,
+                "prompt_versao": prompt_versao,
+                "rag_versao": rag_versao,
+            },
+        )
+        execucao_id = cursor.lastrowid
+        conn.commit()
+        return execucao_id
+    finally:
+        cursor.close()
+
+
