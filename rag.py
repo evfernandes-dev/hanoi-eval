@@ -161,3 +161,72 @@ def indexar(conn, pasta, modelo_embedding):
         print(f"RAG: {doc['documento']} indexado.")
 
 
+def similaridade_cosseno(a, b):
+    """Similaridade de cosseno entre dois vetores."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    produto = math.fsum(x * y for x, y in zip(a, b))
+    norma_a = math.sqrt(math.fsum(x * x for x in a))
+    norma_b = math.sqrt(math.fsum(y * y for y in b))
+    if norma_a == 0 or norma_b == 0:
+        return 0.0
+    return produto / (norma_a * norma_b)
+
+
+def ranquear(consulta_vetor, trechos, limite):
+    """Ordena os trechos pela similaridade e devolve os mais relevantes."""
+    pontuados = []
+    for trecho in trechos:
+        vetor = json.loads(trecho["embedding"])
+        pontuados.append(
+            {
+                **trecho,
+                "score": similaridade_cosseno(consulta_vetor, vetor),
+            }
+        )
+    pontuados.sort(key=lambda item: item["score"], reverse=True)
+    return pontuados[:limite]
+
+
+def buscar(conn, pergunta, modelo_embedding, pasta, limite=3):
+    """Gera o embedding da pergunta e busca os trechos mais parecidos."""
+    documentos = carregar_documentos(pasta)
+    hashes_atuais = {(doc["documento"], doc["hash"]) for doc in documentos}
+    consulta_vetor = obter_embedding(pergunta, modelo_embedding)
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT id, documento, hash_documento, texto, embedding
+            FROM rag_trechos
+            WHERE modelo_embedding = %s
+            """,
+            (modelo_embedding,),
+        )
+        linhas = [
+            {
+                "id": id_trecho,
+                "documento": documento,
+                "texto": texto,
+                "embedding": embedding,
+            }
+            for id_trecho, documento, hash_documento, texto, embedding in cursor.fetchall()
+            if (documento, hash_documento) in hashes_atuais
+        ]
+    finally:
+        cursor.close()
+
+    if not linhas:
+        return []
+    return ranquear(consulta_vetor, linhas, limite)
+
+
+def montar_contexto(trechos):
+    """Monta o texto que será colocado no prompt do modelo."""
+    return "\n\n".join(
+        f"[{numero}] {trecho['texto']}"
+        for numero, trecho in enumerate(trechos, start=1)
+    )
+
+
